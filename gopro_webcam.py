@@ -12,7 +12,7 @@ def self_test():
     import av
     import numpy
     import pyvirtualcam  # noqa: F401
-    import tkinter  # noqa: F401
+    import tkinter
 
     import bridge
     import checks  # noqa: F401
@@ -21,6 +21,12 @@ def self_test():
     assert "h264" in av.codecs_available, "немає декодера h264"
     frame = av.VideoFrame.from_ndarray(numpy.zeros((480, 864, 3), numpy.uint8), format="rgb24")
     assert bridge.Bridge("127.0.0.1", 1280, 720)._fit(frame).shape == (720, 1280, 3)
+
+    import sv_ttk
+    root = tkinter.Tk()  # тема Windows 11 має бути вшита в exe
+    root.withdraw()
+    sv_ttk.set_theme("dark", root)
+    root.destroy()
     return 0
 
 

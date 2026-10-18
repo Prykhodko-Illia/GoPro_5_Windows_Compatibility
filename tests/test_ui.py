@@ -33,8 +33,7 @@ class FakeBridge:
 def main():
     root = tk.Tk()
     root.withdraw()
-    app = ui.App(root)
-    app._closing.set()  # фонові перевірки не потрібні
+    app = ui.App(root, theme="light", background_checks=False)
 
     bridges = [None]
     for keepalive in (False, True):
@@ -66,13 +65,26 @@ def main():
     # Повний цикл tick() зі "стрімом", що йде, і розгортання налаштувань.
     app.bridge = FakeBridge(False, True, 0.1)
     app.tick()
-    app.toggle_settings()
+    app.toggle_settings()  # відкриті налаштування під час роботи: поля вимкнені
     app.toggle_settings()
     app.bridge = None
+    app.toggle_settings()
+    app.toggle_settings()
+    for step in app.steps:
+        step.toggle_help()
+        step.toggle_help()
+    app.show_sheet("Тест", "Текст", error=True).destroy()
+    if app.themed:
+        app.toggle_theme()
+        assert app.dark and app.pal["fg"] == ui.PALETTES["dark"]["fg"]
+        app.tick()
+        app.toggle_theme()
+    app._update_progress()
+    assert app.progress_label.cget("text"), "немає тексту прогресу"
     for step in (app.s_vcam, app.s_gopro, app.s_net, app.s_stream, app.s_discord):
         assert step.hint.cget("text"), "крок без підказки"
     app.on_close()
-    print(f"ALL OK ({states} states)")
+    print(f"ALL OK ({states} states, theme={'sv-ttk' if app.themed else 'fallback'})")
     return 0
 
 

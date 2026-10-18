@@ -25,11 +25,10 @@ jobs:
         run: python tests/test_bridge.py
       - name: Test wizard window
         run: python tests/test_ui.py
-
       - name: Build exe
         run: >
           pyinstaller --noconfirm --onefile --windowed --name GoProWebcam
-          --collect-all av --collect-all pyvirtualcam gopro_webcam.py
+          --collect-all av --collect-all pyvirtualcam --collect-all sv_ttk gopro_webcam.py
       - name: Self-test exe
         shell: pwsh
         run: |

@@ -7,7 +7,7 @@ call .venv\Scripts\activate.bat
 python -m pip install --upgrade pip
 pip install -r requirements.txt pyinstaller || goto :error
 pyinstaller --noconfirm --onefile --windowed --name GoProWebcam ^
-  --collect-all av --collect-all pyvirtualcam gopro_webcam.py || goto :error
+  --collect-all av --collect-all pyvirtualcam --collect-all sv_ttk gopro_webcam.py || goto :error
 echo.
 echo Готово: dist\GoProWebcam.exe
 pause
