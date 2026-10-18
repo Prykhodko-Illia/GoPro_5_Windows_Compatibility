@@ -1,0 +1,3 @@
+av>=12
+numpy>=1.24
+pyvirtualcam>=0.11
