@@ -74,9 +74,16 @@ def main(out_dir):
         # 1. Перший запуск: OBS немає, камери не видно, інтернету немає; підказка розгорнута.
         app.vcam = (False, "Device not found")
         app.camera, app.camera_checked, app.internet = None, True, False
-        app.s_gopro.toggle_help()
+        app.s_gopro.toggle_help()  # на низькому екрані CI підказка відкриється окремим вікном
+        sheets = [w for w in root.winfo_children() if isinstance(w, tk.Toplevel)]
+        if sheets:
+            sheets[0].attributes("-topmost", True)
+            shoot(root, sheets[0], os.path.join(out_dir, f"{theme}-1b-help-sheet.png"))
+            for w in sheets:
+                w.destroy()
         shoot(root, root, os.path.join(out_dir, f"{theme}-1-setup.png"))
-        app.s_gopro.toggle_help()
+        if app.s_gopro.help.winfo_ismapped():
+            app.s_gopro.toggle_help()
 
         # 2. Пошук: значки очікування.
         app.vcam, app.camera_checked, app.internet = None, False, None

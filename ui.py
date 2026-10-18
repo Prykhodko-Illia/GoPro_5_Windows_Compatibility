@@ -185,6 +185,8 @@ class Step:
 
     def __init__(self, app, parent, number, title, help_text=None, actions=()):
         self.app = app
+        self.title = title
+        self.help_text = help_text
         self.card = tk.Frame(parent, highlightthickness=1, bd=0)
         app.paint(self.card, bg="bg", highlightbackground="border", highlightcolor="border")
         self.card.columnconfigure(1, weight=1)
@@ -267,9 +269,17 @@ class Step:
         if self.help.winfo_ismapped():
             self.help.grid_remove()
             self.help_link.config(text="Як це зробити?")
-        else:
-            self.help.grid()
-            self.help_link.config(text="Сховати підказку")
+            return
+        for other in self.app.steps:  # одночасно відкрита лише одна підказка
+            if other is not self and other.help is not None and other.help.winfo_ismapped():
+                other.toggle_help()
+        root = self.app.root
+        root.update_idletasks()
+        if root.winfo_reqheight() + self.help.winfo_reqheight() > root.winfo_screenheight() - 90:
+            self.app.show_sheet(self.title, self.help_text)  # на низькому екрані не влізе в картку
+            return
+        self.help.grid()
+        self.help_link.config(text="Сховати підказку")
 
 
 class App:
