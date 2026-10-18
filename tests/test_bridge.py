@@ -5,6 +5,7 @@
 
 import http.server
 import json
+import logging
 import os
 import sys
 import threading
@@ -18,6 +19,8 @@ import bridge  # noqa: E402
 import checks  # noqa: E402
 import gopro  # noqa: E402
 
+logging.basicConfig(level=logging.INFO, format="  log %(relativeCreated)6dms %(message)s",
+                    stream=sys.stdout)
 gopro.HTTP_PORT = 8080  # порт 80 часто потребує прав адміністратора
 requests = []
 
@@ -73,15 +76,15 @@ def main():
 
     # Віртуальну камеру не запускаємо (в CI її немає) - тільки keep-alive і декодер.
     b = bridge.Bridge("127.0.0.1", 1280, 720)
-    b.started_at = time.monotonic()
-    b._threads = [threading.Thread(target=t, daemon=True) for t in (b._keepalive_loop, b._reader_loop)]
-    for t in b._threads:
-        t.start()
+    b._output_loop = lambda: None
+    b.start()
+    check("bridge started", b.fatal_error is None)
 
     time.sleep(1)
     send_stream(4)
     check("camera reachable", b.camera_reachable is True)
     check("start stream requested", any("gpStream" in p for p in requests))
+    check(f"UDP packets received ({b.packets_in})", b.packets_in > 100)
     check(f"frames decoded ({b.frames_in})", b.frames_in > 60)
     check(f"source size {b.source_size}", b.source_size == (864, 480))
     img = b._latest
@@ -96,10 +99,15 @@ def main():
     n_before, starts_before = b.frames_in, sum("gpStream" in p for p in requests)
     time.sleep(13)
     since = b.seconds_since_frame
-    check(f"no-signal detected ({since:.1f}s)", since > bridge.NO_SIGNAL_TIMEOUT)
+    check(f"no-signal detected ({since}s)", since is not None and since > bridge.NO_SIGNAL_TIMEOUT)
     check("stream restart re-requested", sum("gpStream" in p for p in requests) > starts_before)
     send_stream(3)
     check(f"recovered after drop (+{b.frames_in - n_before} frames)", b.frames_in - n_before > 40)
+
+    # Другий екземпляр не може зайняти той самий порт -> зрозуміла помилка.
+    dup = bridge.Bridge("127.0.0.1", 1280, 720)
+    dup.start()
+    check("busy port -> friendly error", dup.fatal_error is not None and "8554" in dup.fatal_error)
     b.stop()
     srv.shutdown()
 

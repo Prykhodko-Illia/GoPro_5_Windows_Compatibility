@@ -1,5 +1,6 @@
 """Потік GoPro -> декодер -> віртуальна вебкамера. Усе працює у фонових потоках."""
 
+import logging
 import socket
 import threading
 import time
@@ -9,9 +10,12 @@ import numpy as np
 
 import gopro
 
+log = logging.getLogger("gopro_webcam")
+
 FPS = 30
 NO_SIGNAL_TIMEOUT = 3.0  # секунд без кадрів -> показуємо заставку
 RESTART_AFTER = 6.0      # секунд без кадрів -> повторно просимо камеру почати потік
+READ_TIMEOUT = 3.0       # секунд без UDP-пакетів -> перевідкриваємо декодер
 
 
 def color_bars(width, height):
@@ -21,6 +25,52 @@ def color_bars(width, height):
          [192, 0, 192], [192, 0, 0], [0, 0, 192]], dtype=np.uint8) // 3
     idx = np.arange(width) * len(colors) // width
     return np.ascontiguousarray(np.broadcast_to(colors[idx], (height, width, 3)))
+
+
+def open_stream_socket():
+    """UDP-сокет на порту потоку. Через нього ж шлемо keep-alive, щоб камера відповідала сюди."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
+        if hasattr(socket, "SIO_UDP_CONNRESET"):
+            # Windows: інакше ICMP "port unreachable" ламає recv помилкою WSAECONNRESET.
+            sock.ioctl(socket.SIO_UDP_CONNRESET, False)
+        sock.bind(("", gopro.STREAM_PORT))
+    except OSError:
+        sock.close()
+        raise
+    sock.settimeout(0.5)
+    return sock
+
+
+class UdpStream:
+    """Файлоподібний об'єкт для PyAV: віддає вміст UDP-датаграм (MPEG-TS) від камери."""
+
+    def __init__(self, sock, stop_event, on_packet):
+        self.sock = sock
+        self.stop_event = stop_event
+        self.on_packet = on_packet
+        self._buf = b""
+
+    def read(self, size):
+        if not self._buf:
+            self._buf = self._next_datagram()
+        chunk, self._buf = self._buf[:size], self._buf[size:]
+        return chunk  # b"" = кінець потоку -> декодер перевідкриється
+
+    def _next_datagram(self):
+        deadline = time.monotonic() + READ_TIMEOUT
+        while not self.stop_event.is_set() and time.monotonic() < deadline:
+            try:
+                data = self.sock.recv(65536)
+            except (socket.timeout, ConnectionResetError):
+                continue
+            except OSError:
+                return b""  # сокет закрито
+            if data and not data.startswith(b"_GPHD_"):  # власний keep-alive (луна в тестах)
+                self.on_packet()
+                return data
+        return b""
 
 
 class Bridge:
@@ -36,10 +86,12 @@ class Bridge:
         self._latest = None
         self._latest_time = 0.0
         self._threads = []
+        self._sock = None
 
         # Стан для інтерфейсу (читається з GUI-потоку).
         self.started_at = None
         self.camera_reachable = None  # None = ще не знаємо
+        self.packets_in = 0
         self.frames_in = 0
         self.source_size = None
         self.vcam_name = None
@@ -51,7 +103,18 @@ class Bridge:
         self.started_at = time.monotonic()
         targets = [self._keepalive_loop]
         if not self.keepalive_only:
+            try:
+                self._sock = open_stream_socket()
+            except OSError as e:
+                log.error("cannot bind UDP port %s: %s", gopro.STREAM_PORT, e)
+                self.fatal_error = (
+                    f"Порт {gopro.STREAM_PORT} уже зайнятий іншою програмою.\n\n"
+                    "Закрий OBS (якщо в ній є Media Source з udp://@:8554) або другу копію "
+                    f"GoPro Webcam і натисни «Старт» ще раз.\n\nДеталі: {e}")
+                return
             targets += [self._reader_loop, self._output_loop]
+        log.info("bridge start: ip=%s %dx%d mirror=%s keepalive_only=%s",
+                 self.ip, self.width, self.height, self.mirror, self.keepalive_only)
         self._threads = [threading.Thread(target=t, daemon=True) for t in targets]
         for t in self._threads:
             t.start()
@@ -60,6 +123,9 @@ class Bridge:
         self.stop_event.set()
         for t in self._threads:
             t.join(timeout=4)
+        if self._sock:
+            self._sock.close()
+        log.info("bridge stop: packets=%d frames=%d", self.packets_in, self.frames_in)
 
     @property
     def seconds_since_frame(self):
@@ -71,7 +137,8 @@ class Bridge:
     # --- камера ----------------------------------------------------------
 
     def _keepalive_loop(self):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        own = self._sock is None
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) if own else self._sock
         last_start = -1e9
         try:
             while not self.stop_event.is_set():
@@ -83,15 +150,21 @@ class Bridge:
                 else:
                     need_start = now - last_start > 4
                 if need_start:
-                    self.camera_reachable = gopro.start_stream(self.ip)
+                    reachable = gopro.start_stream(self.ip)
+                    if reachable != self.camera_reachable:
+                        log.info("camera %s reachable: %s (packets so far: %d)",
+                                 self.ip, reachable, self.packets_in)
+                    self.camera_reachable = reachable
                     last_start = now
                 try:
                     sock.sendto(gopro.KEEPALIVE_MSG, (self.ip, gopro.STREAM_PORT))
-                except OSError:
+                except OSError as e:
+                    log.info("keep-alive failed: %s", e)
                     self.camera_reachable = False
                 self.stop_event.wait(gopro.KEEPALIVE_INTERVAL)
         finally:
-            sock.close()
+            if own:
+                sock.close()
 
     # --- відео -----------------------------------------------------------
 
@@ -109,18 +182,23 @@ class Bridge:
         canvas[y0:y0 + nh, x0:x0 + nw] = rgb
         return canvas
 
+    def _count_packet(self):
+        self.packets_in += 1
+
     def _reader_loop(self):
-        url = f"udp://@:{gopro.STREAM_PORT}?timeout=3000000&buffer_size=1048576"
-        # Без fflags=nobuffer: він викидає пакети з етапу аналізу разом з першим ключовим кадром.
-        options = {"flags": "low_delay", "probesize": "131072", "analyzeduration": "1000000"}
+        udp = UdpStream(self._sock, self.stop_event, self._count_packet)
+        options = {"probesize": "131072", "analyzeduration": "1000000"}
         while not self.stop_event.is_set():
             try:
-                container = av.open(url, format="mpegts", options=options, timeout=(5, 3))
-            except Exception:
-                self.stop_event.wait(1)
-                continue
+                container = av.open(udp, format="mpegts", options=options)
+            except Exception as e:
+                if self.packets_in:
+                    log.info("stream open failed: %s", e)
+                continue  # без пакетів open сам чекає READ_TIMEOUT, окрема пауза не потрібна
             try:
                 stream = container.streams.video[0]
+                log.info("stream opened: %s %dx%d (packets: %d)", stream.codec_context.name,
+                         stream.codec_context.width, stream.codec_context.height, self.packets_in)
                 for packet in container.demux(stream):
                     if self.stop_event.is_set():
                         break
@@ -135,8 +213,10 @@ class Bridge:
                             self._latest_time = time.monotonic()
                         self.source_size = (frame.width, frame.height)
                         self.frames_in += 1
-            except Exception:
-                pass  # таймаут або обрив - перепідключаємось
+                log.info("stream ended (packets: %d, frames: %d)", self.packets_in, self.frames_in)
+            except Exception as e:
+                log.info("stream interrupted: %r (packets: %d, frames: %d)",
+                         e, self.packets_in, self.frames_in)
             finally:
                 container.close()
 
@@ -146,6 +226,7 @@ class Bridge:
             cam = pyvirtualcam.Camera(width=self.width, height=self.height, fps=FPS,
                                       fmt=pyvirtualcam.PixelFormat.RGB)
         except Exception as e:
+            log.error("virtual camera unavailable: %s", e)
             self.fatal_error = (
                 "Не вдалося запустити віртуальну камеру.\n\n"
                 "• Якщо OBS Studio не встановлена — встанови її (obsproject.com), відкрий один раз, "
@@ -157,6 +238,7 @@ class Bridge:
         placeholder = color_bars(self.width, self.height)
         with cam:
             self.vcam_name = cam.device
+            log.info("virtual camera: %s", cam.device)
             while not self.stop_event.is_set():
                 with self._lock:
                     img, t = self._latest, self._latest_time
