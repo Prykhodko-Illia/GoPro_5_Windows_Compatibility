@@ -14,7 +14,8 @@ log = logging.getLogger("gopro_webcam")
 
 FPS = 30
 NO_SIGNAL_TIMEOUT = 3.0  # секунд без кадрів -> показуємо заставку
-RESTART_AFTER = 6.0      # секунд без кадрів -> повторно просимо камеру почати потік
+RESTART_AFTER = 6.0      # секунд без пакетів -> повторно просимо камеру почати потік
+DECODE_STUCK_AFTER = 15.0  # пакети йдуть, а кадрів немає стільки секунд -> теж перезапуск
 READ_TIMEOUT = 3.0       # секунд без UDP-пакетів -> перевідкриваємо декодер
 
 
@@ -51,6 +52,11 @@ class UdpStream:
         self.stop_event = stop_event
         self.on_packet = on_packet
         self._buf = b""
+        self._eof = False
+
+    def reset(self):
+        """Перед новим av.open: знову чекати пакети до READ_TIMEOUT."""
+        self._eof = False
 
     def read(self, size):
         if not self._buf:
@@ -59,7 +65,9 @@ class UdpStream:
         return chunk  # b"" = кінець потоку -> декодер перевідкриється
 
     def _next_datagram(self):
-        deadline = time.monotonic() + READ_TIMEOUT
+        # Після першого кінця потоку не чекаємо знову по READ_TIMEOUT на кожне читання,
+        # інакше демуксер "помічає" обрив лише за ~12 с.
+        deadline = time.monotonic() + (0 if self._eof else READ_TIMEOUT)
         while not self.stop_event.is_set() and time.monotonic() < deadline:
             try:
                 data = self.sock.recv(65536)
@@ -68,8 +76,10 @@ class UdpStream:
             except OSError:
                 return b""  # сокет закрито
             if data and not data.startswith(b"_GPHD_"):  # власний keep-alive (луна в тестах)
+                self._eof = False
                 self.on_packet()
                 return data
+        self._eof = True
         return b""
 
 
@@ -85,6 +95,7 @@ class Bridge:
         self._lock = threading.Lock()
         self._latest = None
         self._latest_time = 0.0
+        self._last_packet_time = None
         self._threads = []
         self._sock = None
 
@@ -134,6 +145,17 @@ class Bridge:
                 return None
             return time.monotonic() - self._latest_time
 
+    def _stalled(self):
+        """Потік зупинився: давно немає пакетів або пакети є, а кадри не декодуються."""
+        now = time.monotonic()
+        last_packet = self._last_packet_time
+        if last_packet is None or now - last_packet > RESTART_AFTER:
+            return True
+        since_frame = self.seconds_since_frame
+        if since_frame is None:
+            return now - self.started_at > DECODE_STUCK_AFTER
+        return since_frame > DECODE_STUCK_AFTER
+
     # --- камера ----------------------------------------------------------
 
     def _keepalive_loop(self):
@@ -144,8 +166,7 @@ class Bridge:
             while not self.stop_event.is_set():
                 now = time.monotonic()
                 if self.camera_reachable:
-                    since = self.seconds_since_frame
-                    stalled = not self.keepalive_only and (since is None or since > RESTART_AFTER)
+                    stalled = not self.keepalive_only and self._stalled()
                     need_start = stalled and now - last_start > RESTART_AFTER + 2
                 else:
                     need_start = now - last_start > 4
@@ -184,11 +205,13 @@ class Bridge:
 
     def _count_packet(self):
         self.packets_in += 1
+        self._last_packet_time = time.monotonic()
 
     def _reader_loop(self):
         udp = UdpStream(self._sock, self.stop_event, self._count_packet)
         options = {"probesize": "131072", "analyzeduration": "1000000"}
         while not self.stop_event.is_set():
+            udp.reset()
             try:
                 container = av.open(udp, format="mpegts", options=options)
             except Exception as e:
