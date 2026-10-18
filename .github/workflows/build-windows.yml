@@ -1,0 +1,52 @@
+name: Build Windows exe
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write  # для публікації релізу з exe на тегах v*
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Test with simulated GoPro
+        run: python tests/test_bridge.py
+      - name: Test wizard window
+        run: python tests/test_ui.py
+
+      - name: Build exe
+        run: >
+          pyinstaller --noconfirm --onefile --windowed --name GoProWebcam
+          --collect-all av --collect-all pyvirtualcam gopro_webcam.py
+      - name: Self-test exe
+        shell: pwsh
+        run: |
+          $p = Start-Process dist\GoProWebcam.exe -ArgumentList "--self-test" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "self-test failed with exit code $($p.ExitCode)" }
+          "exe OK, size: {0:N1} MB" -f ((Get-Item dist\GoProWebcam.exe).Length / 1MB)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GoProWebcam-windows
+          path: dist/GoProWebcam.exe
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/GoProWebcam.exe
+          body: |
+            Завантаж **GoProWebcam.exe** нижче і запусти. Інструкція: README.md.
+            Потрібна безкоштовна OBS Studio (лише як драйвер вебкамери).
