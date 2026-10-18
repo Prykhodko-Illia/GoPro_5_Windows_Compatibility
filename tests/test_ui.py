@@ -17,8 +17,10 @@ class FakeBridge:
     source_size = (864, 480)
     frames_in = 0
 
-    def __init__(self, keepalive_only, reachable, since, age=0.0, vcam_name="OBS Virtual Camera"):
+    def __init__(self, keepalive_only, reachable, since, age=0.0, packets=0,
+                 vcam_name="OBS Virtual Camera"):
         self.keepalive_only = keepalive_only
+        self.packets_in = packets
         self.camera_reachable = reachable
         self.seconds_since_frame = since
         self.started_at = time.monotonic() - age
@@ -39,7 +41,8 @@ def main():
         for reachable in (None, False, True):
             for since in (None, 0.1, 10.0):
                 for age in (1.0, 30.0):
-                    bridges.append(FakeBridge(keepalive, reachable, since, age))
+                    for packets in (0, 500):
+                        bridges.append(FakeBridge(keepalive, reachable, since, age, packets))
     environments = [
         (None, None, False, None),
         ((False, "Device not found"), None, True, False),

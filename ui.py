@@ -281,7 +281,7 @@ class App:
                 err = b.fatal_error
                 self.stop_bridge()
                 self.recheck_vcam()
-                messagebox.showerror("Віртуальна камера", err, parent=self.root)
+                messagebox.showerror("Помилка", err, parent=self.root)
         else:
             self._last_frames = 0
 
@@ -351,8 +351,16 @@ class App:
                 sw, sh = b.source_size
                 self.s_stream.set(OK, f"Іде: {sw}×{sh}, {self._fps:.0f} кадр/с")
             elif time.monotonic() - b.started_at > FIREWALL_HINT_AFTER:
-                self.s_stream.set(WARN, "Відео не приходить. Найчастіше його блокує брандмауер "
-                                        "Windows — натисни «Не працює?».", ["Не працює?"])
+                if b.packets_in == 0:
+                    self.s_stream.set(WARN, "Від камери не приходить жодного пакета. Найчастіше їх "
+                                            "блокує брандмауер Windows — натисни «Не працює?».",
+                                      ["Не працює?"])
+                else:
+                    self.s_stream.set(WARN, f"Дані з камери надходять ({b.packets_in} пакетів), але "
+                                            "відео поки не розібрати. Вимкни й увімкни Wi-Fi на камері "
+                                            "і натисни «Стоп» → «Старт».")
+            elif b.packets_in:
+                self.s_stream.set(WAIT, "Отримую дані з камери, запускаю відео…")
             else:
                 self.s_stream.set(WAIT, "Чекаю відео… (якщо Windows спитає дозвіл — дозволь для "
                                         "приватних і публічних мереж)")
