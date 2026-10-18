@@ -36,6 +36,8 @@ RESOLUTIONS = {
 OK, FAIL, WARN, WAIT, NEXT, IDLE = "ok", "fail", "warn", "wait", "next", "idle"
 GLYPHS = {OK: "✓", FAIL: "✕", WARN: "!", NEXT: "→"}
 FIREWALL_HINT_AFTER = 15  # секунд без відео -> підказка про брандмауер
+CONTENT_WIDTH = 640  # фіксована ширина, щоб вікно не "стрибало" від кнопок і тексту
+HELP_STATES = (FAIL, WARN, WAIT, NEXT)  # коли біля кроку показувати «Як це зробити?»
 
 OBS_URL = "https://obsproject.com/download"
 LOG_PATH = os.path.join(tempfile.gettempdir(), "GoProWebcam.log")
@@ -191,7 +193,7 @@ class Step:
         self.bar.grid(row=0, column=0, sticky="ns")
         body = tk.Frame(self.card)
         app.paint(body, bg="bg")
-        body.grid(row=0, column=1, sticky="nsew", padx=(12, 14), pady=11)
+        body.grid(row=0, column=1, sticky="nsew", padx=(12, 14), pady=9)
         body.columnconfigure(1, weight=1)
 
         self.badge = Badge(body, app, number)
@@ -199,25 +201,27 @@ class Step:
         title_label = tk.Label(body, text=title, font=app.f_h, anchor="w")
         app.paint(title_label, bg="bg", fg="fg")
         title_label.grid(row=0, column=1, sticky="w")
-        self.hint = tk.Label(body, font=app.f_body, anchor="w", justify="left", wraplength=360)
+        self.hint = tk.Label(body, font=app.f_body, anchor="w", justify="left", wraplength=430)
         app.paint(self.hint, bg="bg", fg="muted")
         self.hint.grid(row=1, column=1, sticky="w", pady=(1, 0))
 
-        box = tk.Frame(body)
-        app.paint(box, bg="bg")
-        box.grid(row=0, column=2, rowspan=2, sticky="e", padx=(12, 0))
+        # Праворуч: кнопки дій і посилання на інструкцію — без окремого рядка, щоб картка була низькою.
+        side = tk.Frame(body)
+        app.paint(side, bg="bg")
+        side.grid(row=0, column=2, rowspan=2, sticky="e", padx=(12, 0))
+        self.button_row = tk.Frame(side)
+        app.paint(self.button_row, bg="bg")
         self.buttons = {}
         for text, command, style in actions:
-            self.buttons[text] = ttk.Button(box, text=text, command=command, style=style)
+            self.buttons[text] = ttk.Button(self.button_row, text=text, command=command, style=style)
 
-        self.help = None
+        self.help = self.help_link = None
         if help_text:
-            self.help_link = app.link(body, "Як це зробити?", self.toggle_help)
-            self.help_link.grid(row=2, column=1, sticky="w", pady=(5, 0))
+            self.help_link = app.link(side, "Як це зробити?", self.toggle_help)
             self.help = tk.Label(body, text=help_text, font=app.f_small, anchor="w",
-                                 justify="left", wraplength=460, padx=12, pady=9)
+                                 justify="left", wraplength=CONTENT_WIDTH - 60, padx=12, pady=9)
             app.paint(self.help, bg="subtle", fg="fg")
-            self.help.grid(row=3, column=1, columnspan=2, sticky="ew", pady=(7, 0))
+            self.help.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(8, 0))
             self.help.grid_remove()
 
         self.current = False
@@ -229,12 +233,22 @@ class Step:
             return
         self._shown = shown
         self.badge.set(state)
-        self.hint.config(text=hint)
-        for text, b in self.buttons.items():
-            if text in show_buttons:
-                b.pack(side="left", padx=(6, 0))
+        self.hint.config(text=hint, wraplength=280 if show_buttons else 430)
+        for b in self.buttons.values():
+            b.pack_forget()
+        for text in show_buttons:
+            self.buttons[text].pack(side="left", padx=(6, 0))
+        if show_buttons:
+            self.button_row.grid(row=0, column=0, sticky="e")
+        else:
+            self.button_row.grid_remove()
+        if self.help_link is not None:
+            if state in HELP_STATES:
+                self.help_link.grid(row=1, column=0, sticky="e", pady=(4, 0) if show_buttons else 0)
             else:
-                b.pack_forget()
+                self.help_link.grid_remove()
+                if self.help.winfo_ismapped():
+                    self.toggle_help()
 
     @property
     def state(self):
@@ -307,7 +321,7 @@ class App:
                     tkfont.nametofont("TkDefaultFont").actual("family"))
         display = next((f for f in ("Segoe UI Variable Display", "Segoe UI Semibold", "Segoe UI")
                         if f in families), text)
-        self.f_title = tkfont.Font(self.root, family=display, size=19, weight="bold")
+        self.f_title = tkfont.Font(self.root, family=display, size=17, weight="bold")
         self.f_h = tkfont.Font(self.root, family=text, size=11, weight="bold")
         self.f_body = tkfont.Font(self.root, family=text, size=10)
         self.f_small = tkfont.Font(self.root, family=text, size=9)
@@ -344,7 +358,7 @@ class App:
             widget.configure(**{opt: self.pal[key] for opt, key in roles.items()})
         for step in self.steps:
             step.repaint()
-        self.theme_button.config(text="☀" if dark else "☾")
+        self.theme_button.config(text="◐")
         style_title_bar(self.root, dark)
 
     def toggle_theme(self):
@@ -369,8 +383,8 @@ class App:
 
     def _build(self):
         main = self.paint(tk.Frame(self.root), bg="bg")
-        main.grid(row=0, column=0, sticky="nsew", padx=22, pady=(18, 16))
-        main.columnconfigure(0, weight=1)
+        main.grid(row=0, column=0, sticky="nsew", padx=22, pady=(16, 14))
+        main.columnconfigure(0, weight=1, minsize=CONTENT_WIDTH)
 
         head = self.paint(tk.Frame(main), bg="bg")
         head.grid(row=0, column=0, sticky="ew")
@@ -382,7 +396,7 @@ class App:
                    bg="bg", fg="muted").grid(row=1, column=0, sticky="w")
         tools = self.paint(tk.Frame(head), bg="bg")
         tools.grid(row=0, column=1, rowspan=2, sticky="ne")
-        self.theme_button = ttk.Button(tools, text="☾", width=3, command=self.toggle_theme)
+        self.theme_button = ttk.Button(tools, text="◐", width=3, command=self.toggle_theme)
         if self.themed:
             self.theme_button.pack(side="left", padx=(0, 6))
         ttk.Button(tools, text="⚙", width=3, command=self.toggle_settings).pack(side="left", padx=(0, 6))
@@ -390,7 +404,7 @@ class App:
             side="left")
 
         progress = self.paint(tk.Frame(main), bg="bg")
-        progress.grid(row=1, column=0, sticky="ew", pady=(16, 10))
+        progress.grid(row=1, column=0, sticky="ew", pady=(12, 10))
         progress.columnconfigure(0, weight=1)
         self.progress_label = self.paint(tk.Label(progress, font=self.f_small_bold, anchor="w"),
                                          bg="bg", fg="muted")
@@ -410,11 +424,11 @@ class App:
         self.s_discord = Step(self, steps, 5, "Вибери камеру в Discord", DISCORD_HELP)
         self.steps = [self.s_vcam, self.s_gopro, self.s_net, self.s_stream, self.s_discord]
         for i, step in enumerate(self.steps):
-            step.card.grid(row=i, column=0, sticky="ew", pady=(0, 8))
+            step.card.grid(row=i, column=0, sticky="ew", pady=(0, 7))
 
         self.button = ttk.Button(main, text="▶   Увімкнути камеру", command=self.toggle,
                                  style="Big.Accent.TButton" if self.themed else "Big.TButton")
-        self.button.grid(row=3, column=0, sticky="ew", pady=(8, 12))
+        self.button.grid(row=3, column=0, sticky="ew", pady=(7, 10))
 
         foot = self.paint(tk.Frame(main), bg="bg")
         foot.grid(row=4, column=0, sticky="ew")
@@ -488,7 +502,7 @@ class App:
         tk.Label(f, text="Роздільність", font=self.f_body, bg=p["bg"], fg=p["muted"]).grid(
             row=4, column=0, sticky="w", pady=(8, 0))
         combo = ttk.Combobox(f, textvariable=self.resolution, values=list(RESOLUTIONS),
-                             state="readonly", width=24)
+                             state="readonly", width=28)
         combo.grid(row=4, column=1, sticky="e", pady=(8, 0))
         switch = ttk.Checkbutton(f, text="Дзеркально відобразити", variable=self.mirror,
                                  style="Switch.TCheckbutton" if self.themed else "TCheckbutton")
