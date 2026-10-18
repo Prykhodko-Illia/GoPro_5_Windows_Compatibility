@@ -1,5 +1,9 @@
 """Вікно-майстер: кроки з автоматичними перевірками, підказками і кнопкою «Старт»."""
 
+import logging
+import logging.handlers
+import os
+import tempfile
 import threading
 import time
 import tkinter as tk
@@ -30,6 +34,7 @@ MUTED = "#57606a"
 FIREWALL_HINT_AFTER = 15  # секунд без відео -> підказка про брандмауер
 
 OBS_URL = "https://obsproject.com/download"
+LOG_PATH = os.path.join(tempfile.gettempdir(), "GoProWebcam.log")
 
 GOPRO_HELP = """Як підключити GoPro HERO5 до комп'ютера:
 
@@ -70,7 +75,10 @@ FIREWALL_HELP = """Відео не приходить?
 4. Постав обидві галочки: «Приватна» і «Публічна» → ОК.
 5. Натисни «Старт» ще раз.
 
-Також допомагає перезапустити Wi-Fi на камері."""
+Також допомагає перезапустити Wi-Fi на камері.
+
+Не допомогло? Надішли тому, хто дав програму, файл журналу:
+{log}""".format(log=LOG_PATH)
 
 GUIDE = """Як це працює
 
@@ -86,7 +94,9 @@ GUIDE = """Як це працює
 Для дзвінків вистачає. Повну якість дає лише HDMI → карта захоплення.
 
 Режим «Тільки запустити потік» (у Налаштуваннях) — для тих, хто хоче обробляти відео в OBS:
-OBS → Sources → Media Source → зніми «Local File» → Input: udp://@:8554, Input Format: mpegts."""
+OBS → Sources → Media Source → зніми «Local File» → Input: udp://@:8554, Input Format: mpegts.
+
+Журнал роботи (для діагностики): {log}""".format(log=LOG_PATH)
 
 
 class Step:
@@ -380,7 +390,21 @@ class App:
         self.s_discord.set(NEXT if streaming else IDLE, hint)
 
 
+def setup_logging():
+    handler = logging.handlers.RotatingFileHandler(LOG_PATH, maxBytes=512 * 1024, backupCount=1,
+                                                   encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    root_logger = logging.getLogger()
+    root_logger.addHandler(handler)
+    root_logger.setLevel(logging.INFO)
+    logging.getLogger("gopro_webcam").info("app start")
+
+
 def main():
+    try:
+        setup_logging()
+    except OSError:
+        pass  # без журналу програма все одно працює
     root = tk.Tk()
     App(root)
     root.mainloop()
